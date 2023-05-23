@@ -142,12 +142,17 @@ func (c *Client) Summarize(text string) (*string, error) {
 }
 
 func (c *Client) requestGpt(prompt string, maxTokens int) (*string, error) {
-	if len(c.azureClients) > 0 {
+	invalidInput := false
+	if len(c.azureClients) > 0 && !invalidInput {
 		for i := 0; i < 3; i++ {
 			client := &c.azureClients[rand.Intn(len(c.azureClients))]
 			res, err := c.doRequestGpt(client, prompt, maxTokens)
 			if err == nil {
 				return res, nil
+			}
+			apiError := &openai.APIError{}
+			if errors.As(err, &apiError) && apiError.HTTPStatusCode == 400 {
+				invalidInput = true
 			}
 		}
 	}
