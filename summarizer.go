@@ -63,6 +63,11 @@ func NewClient(config Config, cache Cache) *Client {
 }
 
 func (c *Client) Summarize(text string) (*string, error) {
+	if len(text) == 0 {
+		log.Printf("Empty input, ignoring")
+		return &text, nil
+	}
+
 	text = PruneInvisibleCharacters(text)
 	log.Printf("Summarizing %d bytes", len(text))
 
