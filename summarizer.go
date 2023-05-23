@@ -123,7 +123,7 @@ func (c *Client) Summarize(text string) (*string, error) {
 		prompt := window.String()
 
 		if cacheResults := c.cache.Get("gpt:" + GetMD5Hash(prompt)); cacheResults != nil {
-			log.Printf("Partial result (cached): %s", *cacheResults)
+			log.Printf("Partial result (cached): %d bytes => %d bytes", len(prompt), len(*cacheResults))
 			summary.WriteString(*cacheResults)
 			summary.WriteString("\n")
 		} else {
@@ -132,7 +132,8 @@ func (c *Client) Summarize(text string) (*string, error) {
 				log.Printf("openai error: %s", err)
 				return nil, err
 			}
-			log.Printf("Partial result: %s", *content)
+
+			log.Printf("Partial result (cached): %d bytes => %d bytes", len(prompt), len(*content))
 			c.cache.Set("gpt:"+GetMD5Hash(prompt), *content)
 			summary.WriteString(*content)
 			summary.WriteString("\n")
