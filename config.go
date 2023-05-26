@@ -3,8 +3,9 @@ package summarizer
 type APIType string
 
 const (
-	APITypeOpenAI APIType = "OPEN_AI"
-	APITypeAzure  APIType = "AZURE"
+	APITypeOpenAI  APIType = "OPEN_AI"
+	APITypeAzure   APIType = "AZURE"
+	APITypeGCPPalm APIType = "GCP_PALM"
 )
 
 type AccessConfig struct {

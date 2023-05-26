@@ -1,12 +1,18 @@
 package summarizer
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io/ioutil"
 	"log"
 	"math/rand"
+	"net/http"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -17,9 +23,33 @@ import (
 var chineseMatcher = regexp.MustCompile("[\u4e00-\u9fa5]")
 var englishMatcher = regexp.MustCompile(`[a-zA-Z]`)
 
+type PalmRequestPrompt struct {
+	Text string `json:"text"`
+}
+
+type PalmRequest struct {
+	Prompt          PalmRequestPrompt        `json:"prompt"`
+	Temperature     float32                  `json:"temperature"`
+	CandidateCount  int                      `json:"candidate_count"`
+	TopK            int                      `json:"top_k"`
+	TopP            float32                  `json:"top_p"`
+	MaxOutputTokens int                      `json:"max_output_tokens"`
+	StopSequences   []string                 `json:"stop_sequences"`
+	SafetySettings  []map[string]interface{} `json:"safety_settings"`
+}
+
+type PalmResponseCandidate struct {
+	Output string `json:"output"`
+}
+
+type PalmResponse struct {
+	Candidates []PalmResponseCandidate `json:"candidates"`
+}
+
 type Client struct {
 	azureClients  []openai.Client
 	openaiClients []openai.Client
+	gcpTokens     []string
 	tiktoken      tiktoken.Tiktoken
 	cache         Cache
 }
@@ -40,6 +70,7 @@ func NewClientNoCache(config Config) *Client {
 func NewClient(config Config, cache Cache) *Client {
 	var azureClients []openai.Client
 	var openaiClients []openai.Client
+	var gcpTokens []string
 	for _, config := range config.AccessConfigs {
 		if config.APIType == APITypeOpenAI {
 			openaiClients = append(openaiClients, *openai.NewClient(config.AuthToken))
@@ -47,6 +78,9 @@ func NewClient(config Config, cache Cache) *Client {
 		if config.APIType == APITypeAzure {
 			clientConfig := openai.DefaultAzureConfig(config.AuthToken, config.BaseURL)
 			azureClients = append(azureClients, *openai.NewClientWithConfig(clientConfig))
+		}
+		if config.APIType == APITypeGCPPalm {
+			gcpTokens = append(gcpTokens, config.AuthToken)
 		}
 	}
 
@@ -57,6 +91,7 @@ func NewClient(config Config, cache Cache) *Client {
 	return &Client{
 		azureClients:  azureClients,
 		openaiClients: openaiClients,
+		gcpTokens:     gcpTokens,
 		tiktoken:      *tiktoken,
 		cache:         cache,
 	}
@@ -133,7 +168,7 @@ func (c *Client) Summarize(text string) (*string, error) {
 				return nil, err
 			}
 
-			log.Printf("Partial result (cached): %d bytes => %d bytes", len(prompt), len(*content))
+			log.Printf("Partial result: %d bytes => %d bytes", len(prompt), len(*content))
 			c.cache.Set("gpt:"+GetMD5Hash(prompt), *content)
 			summary.WriteString(*content)
 			summary.WriteString("\n")
@@ -155,6 +190,7 @@ func (c *Client) requestGpt(prompt string, maxTokens int) (*string, error) {
 			if errors.As(err, &apiError) && apiError.HTTPStatusCode == 400 {
 				invalidInput = true
 			}
+			log.Printf("GPT error: %s", err)
 		}
 	}
 	if len(c.openaiClients) > 0 {
@@ -164,6 +200,17 @@ func (c *Client) requestGpt(prompt string, maxTokens int) (*string, error) {
 			if err == nil {
 				return res, nil
 			}
+			log.Printf("GPT error: %s", err)
+		}
+	}
+	if len(c.gcpTokens) > 0 {
+		for i := 0; i < 3; i++ {
+			token := c.gcpTokens[rand.Intn(len(c.gcpTokens))]
+			res, err := c.doRequestPalm(token, prompt)
+			if err == nil {
+				return res, nil
+			}
+			log.Printf("Palm error: %s", err)
 		}
 	}
 	return nil, errors.New("all retries have failed")
@@ -189,6 +236,87 @@ func (c *Client) doRequestGpt(client *openai.Client, prompt string, maxTokens in
 	}
 
 	return &resp.Choices[0].Message.Content, nil
+}
+
+func (c *Client) doRequestPalm(token string, prompt string) (*string, error) {
+	netTransport := &http.Transport{
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+
+	client := &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: netTransport,
+	}
+
+	requestJson := PalmRequest{
+		Prompt:          PalmRequestPrompt{Text: prompt},
+		Temperature:     0.7,
+		CandidateCount:  1,
+		TopK:            40,
+		TopP:            0.95,
+		MaxOutputTokens: 1024,
+		StopSequences:   []string{},
+		SafetySettings: []map[string]interface{}{
+			{
+				"category":  "HARM_CATEGORY_DEROGATORY",
+				"threshold": 4,
+			},
+			{
+				"category":  "HARM_CATEGORY_TOXICITY",
+				"threshold": 4,
+			},
+			{
+				"category":  "HARM_CATEGORY_VIOLENCE",
+				"threshold": 4,
+			},
+			{
+				"category":  "HARM_CATEGORY_SEXUAL",
+				"threshold": 4,
+			},
+			{
+				"category":  "HARM_CATEGORY_MEDICAL",
+				"threshold": 4,
+			},
+			{
+				"category":  "HARM_CATEGORY_DANGEROUS",
+				"threshold": 4,
+			},
+		},
+	}
+	payload, err := json.Marshal(requestJson)
+	if err != nil {
+		return nil, fmt.Errorf("palm serialization failure: %s", err)
+	}
+
+	request, _ := http.NewRequest(
+		"POST",
+		"https://generativelanguage.googleapis.com/v1beta2/models/text-bison-001:generateText?key="+token,
+		bytes.NewReader(payload))
+	request.Header.Add("content-type", "application/json")
+	response, err := client.Do(request)
+	if err != nil || response == nil {
+		return nil, fmt.Errorf("palm failure: %s", err)
+	}
+
+	defer response.Body.Close()
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("palm read response: %s", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf(
+			"palm status: %d\nresponse: %s", response.StatusCode, string(body))
+	}
+
+	var result PalmResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("palm parse response: %s", err)
+	}
+
+	if len(result.Candidates) == 0 {
+		return nil, errors.New("palm: No response")
+	}
+	return &result.Candidates[0].Output, nil
 }
 
 func PruneInvisibleCharacters(s string) string {
