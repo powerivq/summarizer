@@ -23,35 +23,13 @@ import (
 var chineseMatcher = regexp.MustCompile("[\u4e00-\u9fa5]")
 var englishMatcher = regexp.MustCompile(`[a-zA-Z]`)
 
-type PalmRequestPrompt struct {
-	Text string `json:"text"`
-}
-
-type PalmRequest struct {
-	Prompt          PalmRequestPrompt        `json:"prompt"`
-	Temperature     float32                  `json:"temperature"`
-	CandidateCount  int                      `json:"candidate_count"`
-	TopK            int                      `json:"top_k"`
-	TopP            float32                  `json:"top_p"`
-	MaxOutputTokens int                      `json:"max_output_tokens"`
-	StopSequences   []string                 `json:"stop_sequences"`
-	SafetySettings  []map[string]interface{} `json:"safety_settings"`
-}
-
-type PalmResponseCandidate struct {
-	Output string `json:"output"`
-}
-
-type PalmResponse struct {
-	Candidates []PalmResponseCandidate `json:"candidates"`
-}
-
 type Client struct {
 	azureClients  []openai.Client
 	openaiClients []openai.Client
 	gcpTokens     []string
 	tiktoken      tiktoken.Tiktoken
 	cache         Cache
+	logger        LLMLogger
 }
 
 type NoCache struct{}
@@ -64,10 +42,10 @@ func (c NoCache) Set(key string, value string) {
 }
 
 func NewClientNoCache(config Config) *Client {
-	return NewClient(config, NoCache{})
+	return NewClient(config, NoCache{}, NoOpLogger{})
 }
 
-func NewClient(config Config, cache Cache) *Client {
+func NewClient(config Config, cache Cache, logger LLMLogger) *Client {
 	var azureClients []openai.Client
 	var openaiClients []openai.Client
 	var gcpTokens []string
@@ -94,6 +72,7 @@ func NewClient(config Config, cache Cache) *Client {
 		gcpTokens:     gcpTokens,
 		tiktoken:      *tiktoken,
 		cache:         cache,
+		logger:        logger,
 	}
 }
 
@@ -184,6 +163,7 @@ func (c *Client) requestGpt(prompt string, maxTokens int) (*string, error) {
 			client := &c.azureClients[rand.Intn(len(c.azureClients))]
 			res, err := c.doRequestGpt(client, prompt, maxTokens)
 			if err == nil {
+				c.logger.Log(prompt, *res, APITypeAzure)
 				return res, nil
 			}
 			apiError := &openai.APIError{}
@@ -198,6 +178,7 @@ func (c *Client) requestGpt(prompt string, maxTokens int) (*string, error) {
 			client := &c.openaiClients[rand.Intn(len(c.openaiClients))]
 			res, err := c.doRequestGpt(client, prompt, maxTokens)
 			if err == nil {
+				c.logger.Log(prompt, *res, APITypeOpenAI)
 				return res, nil
 			}
 			log.Printf("GPT error: %s", err)
@@ -208,6 +189,7 @@ func (c *Client) requestGpt(prompt string, maxTokens int) (*string, error) {
 			token := c.gcpTokens[rand.Intn(len(c.gcpTokens))]
 			res, err := c.doRequestPalm(token, prompt)
 			if err == nil {
+				c.logger.Log(prompt, *res, APITypeGCPPalm)
 				return res, nil
 			}
 			log.Printf("Palm error: %s", err)
