@@ -98,8 +98,8 @@ func (c *Client) Summarize(text string) (*string, error) {
 		finalSummarizePrompt = "Summarize this judgment in detail: \n\n"
 	}
 
-	if tokens := len(c.tiktoken.Encode(text, nil, nil)); tokens <= 3000 {
-		content, err := c.requestGpt(finalSummarizePrompt+text, 4000-tokens-len(c.tiktoken.Encode(finalSummarizePrompt, nil, nil)))
+	if tokens := len(c.tiktoken.Encode(text, nil, nil)); tokens <= 9000 {
+		content, err := c.requestGpt(finalSummarizePrompt+text))
 		if err != nil {
 			return nil, err
 		}
@@ -118,7 +118,7 @@ func (c *Client) Summarize(text string) (*string, error) {
 		window.WriteString(mergePrompt)
 		tokens = promptTokens
 
-		for ; i < len(texts) && tokens <= 2500; i++ {
+		for ; i < len(texts) && tokens <= 8500; i++ {
 			window.WriteString(texts[i])
 			window.WriteString("\n")
 			tokens += len(c.tiktoken.Encode(texts[i], nil, nil)) + 1
@@ -141,7 +141,7 @@ func (c *Client) Summarize(text string) (*string, error) {
 			summary.WriteString(*cacheResults)
 			summary.WriteString("\n")
 		} else {
-			content, err := c.requestGpt(prompt, 4000-tokens)
+			content, err := c.requestGpt(prompt)
 			if err != nil {
 				log.Printf("openai error: %s", err)
 				return nil, err
@@ -156,12 +156,12 @@ func (c *Client) Summarize(text string) (*string, error) {
 	return c.Summarize(summary.String())
 }
 
-func (c *Client) requestGpt(prompt string, maxTokens int) (*string, error) {
+func (c *Client) requestGpt(prompt string) (*string, error) {
 	invalidInput := false
 	if len(c.azureClients) > 0 && !invalidInput {
 		for i := 0; i < 3; i++ {
 			client := &c.azureClients[rand.Intn(len(c.azureClients))]
-			res, err := c.doRequestGpt(client, prompt, maxTokens)
+			res, err := c.doRequestGpt(client, prompt)
 			if err == nil {
 				c.logger.Log(prompt, *res, APITypeAzure)
 				return res, nil
@@ -176,7 +176,7 @@ func (c *Client) requestGpt(prompt string, maxTokens int) (*string, error) {
 	if len(c.openaiClients) > 0 {
 		for i := 0; i < 3; i++ {
 			client := &c.openaiClients[rand.Intn(len(c.openaiClients))]
-			res, err := c.doRequestGpt(client, prompt, maxTokens)
+			res, err := c.doRequestGpt(client, prompt)
 			if err == nil {
 				c.logger.Log(prompt, *res, APITypeOpenAI)
 				return res, nil
@@ -198,17 +198,15 @@ func (c *Client) requestGpt(prompt string, maxTokens int) (*string, error) {
 	return nil, errors.New("all retries have failed")
 }
 
-func (c *Client) doRequestGpt(client *openai.Client, prompt string, maxTokens int) (*string, error) {
+func (c *Client) doRequestGpt(client *openai.Client, prompt string) (*string, error) {
 	resp, err := client.CreateChatCompletion(
 		context.Background(),
 		openai.ChatCompletionRequest{
-			Model: openai.GPT3Dot5Turbo,
+			Model: openai.GPT3Dot5Turbo16K,
 			Messages: []openai.ChatCompletionMessage{{
 				Role:    openai.ChatMessageRoleUser,
 				Content: prompt,
 			}},
-			MaxTokens:   maxTokens,
-			Temperature: 0.7,
 			Stream:      false,
 		},
 	)
