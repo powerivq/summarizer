@@ -5,7 +5,7 @@ type APIType string
 const (
 	APITypeOpenAI  APIType = "OPEN_AI"
 	APITypeAzure   APIType = "AZURE"
-	APITypeGCPPalm APIType = "GCP_PALM"
+	APITypeGCPGemini APIType = "GCP_GEMINI"
 )
 
 type AccessConfig struct {

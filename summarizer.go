@@ -57,7 +57,7 @@ func NewClient(config Config, cache Cache, logger LLMLogger) *Client {
 			clientConfig := openai.DefaultAzureConfig(config.AuthToken, config.BaseURL)
 			azureClients = append(azureClients, *openai.NewClientWithConfig(clientConfig))
 		}
-		if config.APIType == APITypeGCPPalm {
+		if config.APIType == APITypeGCPGemini {
 			gcpTokens = append(gcpTokens, config.AuthToken)
 		}
 	}
@@ -88,18 +88,15 @@ func (c *Client) Summarize(text string) (*string, error) {
 	chineseChars := len(chineseMatcher.FindAllString(text, -1))
 	englishChars := len(englishMatcher.FindAllString(text, -1))
 
-	var mergePrompt string
-	var finalSummarizePrompt string
+	var prompt string
 	if chineseChars >= englishChars {
-		mergePrompt = "用中文詳細總結每一段: \n\n"
-		finalSummarizePrompt = "用中文詳細總結下面的判決: \n\n"
+		prompt = "In Chinese, write a case brief for the following judgment, includes the facts, procedural history, holdings, rationales for each holding, and final disposition: \n\n"
 	} else {
-		mergePrompt = "Summarize in detail, paragraph by paragraph: \n\n"
-		finalSummarizePrompt = "Summarize this judgment in detail: \n\n"
+		prompt = "Write a case brief for the following judgment, includes the facts, procedural history, holdings, rationales for each holding, and final disposition: \n\n"
 	}
 
-	if tokens := len(c.tiktoken.Encode(text, nil, nil)); tokens <= 9000 {
-		content, err := c.requestGpt(finalSummarizePrompt+text))
+	if tokens := len(c.tiktoken.Encode(text, nil, nil)); tokens <= 25000 {
+		content, err := c.requestGpt(prompt+text)
 		if err != nil {
 			return nil, err
 		}
@@ -112,13 +109,13 @@ func (c *Client) Summarize(text string) (*string, error) {
 	var window strings.Builder
 	var tokens int
 
-	promptTokens := len(c.tiktoken.Encode(mergePrompt, nil, nil))
+	promptTokens := len(c.tiktoken.Encode(prompt, nil, nil))
 	for i := 0; i < len(texts); {
 		window.Reset()
-		window.WriteString(mergePrompt)
+		window.WriteString(prompt)
 		tokens = promptTokens
 
-		for ; i < len(texts) && tokens <= 8500; i++ {
+		for ; i < len(texts) && tokens <= 24000; i++ {
 			window.WriteString(texts[i])
 			window.WriteString("\n")
 			tokens += len(c.tiktoken.Encode(texts[i], nil, nil)) + 1
@@ -187,12 +184,12 @@ func (c *Client) requestGpt(prompt string) (*string, error) {
 	if len(c.gcpTokens) > 0 {
 		for i := 0; i < 3; i++ {
 			token := c.gcpTokens[rand.Intn(len(c.gcpTokens))]
-			res, err := c.doRequestPalm(token, prompt)
+			res, err := c.doRequestGemini(token, prompt)
 			if err == nil {
-				c.logger.Log(prompt, *res, APITypeGCPPalm)
+				c.logger.Log(prompt, *res, APITypeGCPGemini)
 				return res, nil
 			}
-			log.Printf("Palm error: %s", err)
+			log.Printf("Gemini error: %s", err)
 		}
 	}
 	return nil, errors.New("all retries have failed")
@@ -218,7 +215,7 @@ func (c *Client) doRequestGpt(client *openai.Client, prompt string) (*string, er
 	return &resp.Choices[0].Message.Content, nil
 }
 
-func (c *Client) doRequestPalm(token string, prompt string) (*string, error) {
+func (c *Client) doRequestGemini(token string, prompt string) (*string, error) {
 	netTransport := &http.Transport{
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
@@ -228,75 +225,84 @@ func (c *Client) doRequestPalm(token string, prompt string) (*string, error) {
 		Transport: netTransport,
 	}
 
-	requestJson := PalmRequest{
-		Prompt:          PalmRequestPrompt{Text: prompt},
-		Temperature:     0.7,
-		CandidateCount:  1,
-		TopK:            40,
-		TopP:            0.95,
-		MaxOutputTokens: 1024,
-		StopSequences:   []string{},
+	requestJson := GeminiRequest{
+		Messages: []GeminiRequestContentsMessage{
+			GeminiRequestContentsMessage{
+				Role: "user",
+				Parts: []GeminiRequestContentsMessagePart{
+					GeminiRequestContentsMessagePart{Text: prompt},
+				},
+			},
+		},
+		Config: GeminiRequestGenerationConfig{
+			Temperature:     0.9,
+			TopK:            1,
+			TopP:            1,
+			MaxOutputTokens: 2048,
+			StopSequences:   []string{},
+		},
 		SafetySettings: []map[string]interface{}{
 			{
-				"category":  "HARM_CATEGORY_DEROGATORY",
-				"threshold": 4,
+				"category":  "HARM_CATEGORY_HARASSMENT",
+				"threshold": "BLOCK_NONE",
 			},
 			{
-				"category":  "HARM_CATEGORY_TOXICITY",
-				"threshold": 4,
+				"category":  "HARM_CATEGORY_HATE_SPEECH",
+				"threshold": "BLOCK_NONE",
 			},
 			{
-				"category":  "HARM_CATEGORY_VIOLENCE",
-				"threshold": 4,
+				"category":  "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+				"threshold": "BLOCK_NONE",
 			},
 			{
-				"category":  "HARM_CATEGORY_SEXUAL",
-				"threshold": 4,
-			},
-			{
-				"category":  "HARM_CATEGORY_MEDICAL",
-				"threshold": 4,
-			},
-			{
-				"category":  "HARM_CATEGORY_DANGEROUS",
-				"threshold": 4,
+				"category":  "HARM_CATEGORY_DANGEROUS_CONTENT",
+				"threshold": "BLOCK_NONE",
 			},
 		},
 	}
 	payload, err := json.Marshal(requestJson)
 	if err != nil {
-		return nil, fmt.Errorf("palm serialization failure: %s", err)
+		return nil, fmt.Errorf("Gemini serialization failure: %s", err)
 	}
 
 	request, _ := http.NewRequest(
 		"POST",
-		"https://generativelanguage.googleapis.com/v1beta2/models/text-bison-001:generateText?key="+token,
+		"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.0-pro:generateContent?key="+token,
 		bytes.NewReader(payload))
 	request.Header.Add("content-type", "application/json")
 	response, err := client.Do(request)
 	if err != nil || response == nil {
-		return nil, fmt.Errorf("palm failure: %s", err)
+		return nil, fmt.Errorf("Gemini failure: %s", err)
 	}
 
 	defer response.Body.Close()
 	body, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		return nil, fmt.Errorf("palm read response: %s", err)
+		return nil, fmt.Errorf("Gemini read response: %s", err)
 	}
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf(
-			"palm status: %d\nresponse: %s", response.StatusCode, string(body))
+			"Gemini status: %d\nresponse: %s", response.StatusCode, string(body))
 	}
 
-	var result PalmResponse
+	var result GeminiResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("palm parse response: %s", err)
+		return nil, fmt.Errorf("Gemini parse response: %s", err)
 	}
 
 	if len(result.Candidates) == 0 {
-		return nil, errors.New("palm: No response")
+		return nil, errors.New("Gemini: No response")
 	}
-	return &result.Candidates[0].Output, nil
+	geminiResult := concatenateStrings(result.Candidates[0].Content.Parts)
+	return &geminiResult, nil
+}
+
+func concatenateStrings(parts []GeminiResponseCandidateContentPart) string {
+	var result string
+	for _, part := range parts {
+		result += part.Text
+	}
+	return result
 }
 
 func PruneInvisibleCharacters(s string) string {
