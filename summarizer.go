@@ -155,6 +155,17 @@ func (c *Client) Summarize(text string) (*string, error) {
 
 func (c *Client) requestGpt(prompt string) (*string, error) {
 	invalidInput := false
+	if len(c.gcpTokens) > 0 {
+		for i := 0; i < 5; i++ {
+			token := c.gcpTokens[rand.Intn(len(c.gcpTokens))]
+			res, err := c.doRequestGemini(token, prompt)
+			if err == nil {
+				c.logger.Log(prompt, *res, APITypeGCPGemini)
+				return res, nil
+			}
+			log.Printf("Gemini error: %s", err)
+		}
+	}
 	if len(c.azureClients) > 0 && !invalidInput {
 		for i := 0; i < 3; i++ {
 			client := &c.azureClients[rand.Intn(len(c.azureClients))]
@@ -179,17 +190,6 @@ func (c *Client) requestGpt(prompt string) (*string, error) {
 				return res, nil
 			}
 			log.Printf("GPT error: %s", err)
-		}
-	}
-	if len(c.gcpTokens) > 0 {
-		for i := 0; i < 3; i++ {
-			token := c.gcpTokens[rand.Intn(len(c.gcpTokens))]
-			res, err := c.doRequestGemini(token, prompt)
-			if err == nil {
-				c.logger.Log(prompt, *res, APITypeGCPGemini)
-				return res, nil
-			}
-			log.Printf("Gemini error: %s", err)
 		}
 	}
 	return nil, errors.New("all retries have failed")
