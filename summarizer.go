@@ -115,7 +115,7 @@ func (c *Client) Summarize(text string) (*string, error) {
 		window.WriteString(prompt)
 		tokens = promptTokens
 
-		for ; i < len(texts) && tokens <= 24000; i++ {
+		for ; i < len(texts) && tokens <= 800000; i++ {
 			window.WriteString(texts[i])
 			window.WriteString("\n")
 			tokens += len(c.tiktoken.Encode(texts[i], nil, nil)) + 1
@@ -238,7 +238,7 @@ func (c *Client) doRequestGemini(token string, prompt string) (*string, error) {
 			Temperature:     0.9,
 			TopK:            1,
 			TopP:            1,
-			MaxOutputTokens: 2048,
+			MaxOutputTokens: 8192,
 			StopSequences:   []string{},
 		},
 		SafetySettings: []map[string]interface{}{
@@ -267,7 +267,7 @@ func (c *Client) doRequestGemini(token string, prompt string) (*string, error) {
 
 	request, _ := http.NewRequest(
 		"POST",
-		"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.0-pro:generateContent?key="+token,
+		"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key="+token,
 		bytes.NewReader(payload))
 	request.Header.Add("content-type", "application/json")
 	response, err := client.Do(request)
