@@ -199,7 +199,7 @@ func (c *Client) doRequestGpt(client *openai.Client, prompt string) (*string, er
 	resp, err := client.CreateChatCompletion(
 		context.Background(),
 		openai.ChatCompletionRequest{
-			Model: openai.GPT3Dot5Turbo16K,
+			Model: openai.GPT4oMini,
 			Messages: []openai.ChatCompletionMessage{{
 				Role:    openai.ChatMessageRoleUser,
 				Content: prompt,
@@ -267,7 +267,7 @@ func (c *Client) doRequestGemini(token string, prompt string) (*string, error) {
 
 	request, _ := http.NewRequest(
 		"POST",
-		"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key="+token,
+		"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key="+token,
 		bytes.NewReader(payload))
 	request.Header.Add("content-type", "application/json")
 	response, err := client.Do(request)
